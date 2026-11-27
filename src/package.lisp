@@ -6,9 +6,10 @@
 ;;;; transport-neutral: two phases over a Clack env and a Clack response,
 ;;;; BEGIN-SESSION (read the cookie, load or start a session) and
 ;;;; FINISH-SESSION (commit: save, rotate or delete, and add the Set-Cookie).
-;;;; A middleware binds them (slice S0b, a SESSION-HANDLER mixin on
-;;;; middleware-protocol); this package defines no middleware, no Lack
-;;;; middleware and nothing specific to a web framework.
+;;;; A middleware binds them (slice S0b, the SESSION-HANDLER mixin on
+;;;; middleware-protocol, in the secondary system session-protocol/middleware);
+;;;; this package defines no middleware, no Lack middleware and nothing
+;;;; specific to a web framework.
 ;;;;
 ;;;; Files:
 ;;;;   conditions.lisp  SESSION-ERROR and its subtypes; restart functions
@@ -25,6 +26,9 @@
 ;;;;                    READ-SESSION-COOKIE, FORMAT-SESSION-COOKIE
 ;;;;   manager.lisp     SESSION-MANAGER (given: class, MAKE-SESSION-MANAGER);
 ;;;;                    BEGIN-SESSION, FINISH-SESSION, ENV-SESSION
+;;;;   middleware.lisp  system session-protocol/middleware, package
+;;;;                    SESSION-PROTOCOL/MIDDLEWARE (slice S0b): SESSION-HANDLER,
+;;;;                    REQUEST-SESSION; this core system does not load it
 ;;;;
 ;;;; Given in the S0 contract: the package, the conditions and restart
 ;;;; functions, the classes with their constructors (argument checks
