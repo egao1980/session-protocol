@@ -1,18 +1,45 @@
 (defsystem "session-protocol"
-  :version "0.0.1"
-  :description "Server-side sessions for Clack apps: model, store protocol (cache-protocol), cookie policy, request and response phases for middleware"
+  :version "0.1.0"
+  :description "Anonymous server-side sessions for Clack apps: a session model with JSON values, a store protocol over cache-protocol, ids from secrets-protocol, a cookie policy, and begin / finish phases for middleware"
   :author "egao1980"
   :license "MIT"
+  :depends-on ((:version "cache-protocol" "0.2.0")
+               (:version "secrets-protocol" "0.1.3")
+               (:version "json-protocol" "0.2.4")
+               (:version "cl-cookie" "0.2.0")
+               (:version "quri" "0.7.2"))
   :pathname "src"
   :serial t
-  :components ((:file "package"))
+  :components ((:file "package")
+               (:file "conditions")
+               (:file "id")
+               (:file "model")
+               (:file "json")
+               (:file "store")
+               (:file "cookie")
+               (:file "manager"))
   :in-order-to ((test-op (test-op "session-protocol/tests"))))
 
 (defsystem "session-protocol/tests"
-  :depends-on ("session-protocol" (:version "rove" "0.11.1"))
+  :depends-on ("session-protocol"
+               (:version "rove" "0.11.1")
+               (:version "json-backend-jzon" "0.2.4")
+               (:version "crypto-backend-ironclad" "0.2.2"))
   :pathname "tests"
   :serial t
-  :components ((:file "session-protocol-test"))
+  :components ((:file "package")
+               (:file "conditions-test")
+               (:file "config-test")
+               (:file "id-test")
+               (:file "model-test")
+               (:file "json-test")
+               (:file "cookie-test")
+               (:file "store-test")
+               (:file "flow-test")
+               (:file "expiry-test")
+               (:file "lifecycle-test")
+               (:file "streaming-test")
+               (:file "failure-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
