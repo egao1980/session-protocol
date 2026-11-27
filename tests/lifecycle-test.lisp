@@ -1,0 +1,153 @@
+;;;; Rotation (REGENERATE-SESSION-ID) and ending (END-SESSION) through the
+;;;; commit.
+
+(in-package #:session-protocol/tests)
+
+;;; Rotation
+
+(deftest rotation-moves-the-data-to-a-new-id
+  (with-world ()
+    (let* ((b (started-browser "cart" (list "a") "n" 1))
+           (old (browser-sid b)))
+      (incf *now* 10)
+      (multiple-value-bind (new response) (visit b #'regenerate-session-id)
+        (ok (valid-session-id-p new))
+        (ok (string/= old new))
+        (ok (equal new (cookie-id response)) "the cookie carries the new id")
+        (ok (equal "86400" (attribute response "max-age")))
+        (ok (null (peek old)) "the old id is gone from the store")
+        (let ((record (stored new)))
+          (ok (json-equal (table "cart" (list "a") "n" 1) (gethash "data" record))
+              "same data under the new id")
+          (ok (= +t0+ (gethash "created" record)) "creation time kept")
+          (ok (= (+ +t0+ 10) (gethash "seen" record)))))
+      (incf *now* 10)
+      (ok (equal '(nil 1) (visit b (lambda (s) (list (session-new-p s)
+                                                    (session-value s "n")))))
+          "the browser goes on with the new id")
+      (ok (session-new-p (visit (make-browser :cookies (list (cons "sid" old)))
+                                #'identity))
+          "the old id no longer opens anything"))))
+
+(deftest rotating-twice-deletes-one-old-id
+  (with-world ()
+    (let* ((b (started-browser "k" 1))
+           (old (browser-sid b))
+           (middle nil))
+      (incf *now* 1)
+      (let ((before (calls *cache*)))
+        (multiple-value-bind (last response)
+            (visit b (lambda (s)
+                       (setf middle (regenerate-session-id s))
+                       (regenerate-session-id s)))
+          (ok (string/= middle last))
+          (ok (equal last (cookie-id response)))
+          (ok (null (peek old)))
+          (ok (null (peek middle)) "the intermediate id was never stored")
+          (ok (stringp (peek last)))
+          (ok (equal (mapcar #'+ before '(1 1 1)) (calls *cache*))
+              "one load, one delete (the loaded id), one save"))))))
+
+(deftest rotating-a-new-session
+  (with-world ()
+    (let ((response (call-app (app (lambda (s)
+                                     (setf (session-value s "k") 1)
+                                     (regenerate-session-id s)))
+                              (make-env))))
+      (ok (stringp (peek (cookie-id response))) "saved under the final id")
+      (ok (equal '(0 1 0) (calls *cache*)) "nothing to delete: it was never stored")))
+  (with-world ()
+    (let ((response (call-app (app #'regenerate-session-id) (make-env))))
+      (ok (null (set-cookies response)) "a new empty session stays unstored, rotated or not")
+      (ok (equal '(0 0 0) (calls *cache*))))))
+
+(deftest rotating-an-empty-loaded-session-still-writes
+  (with-world ()
+    (let* ((b (started-browser "k" 1))
+           (old (browser-sid b)))
+      (incf *now* 1)
+      (visit b #'clear-session)
+      (ok (json-equal (table) (stored-data old)) "a cleared loaded session is kept, empty")
+      (incf *now* 1)
+      (let ((new (visit b #'regenerate-session-id)))
+        (ok (null (peek old)))
+        (ok (json-equal (table) (stored-data new)))))))
+
+(deftest rotate-and-change-in-one-request
+  (with-world ()
+    (let ((b (started-browser "role" "guest")))
+      (incf *now* 1)
+      (visit b (lambda (s)
+                 (regenerate-session-id s)
+                 (setf (session-value s "role") "member")))
+      (ok (json-equal (table "role" "member") (stored-data (browser-sid b)))))))
+
+;;; Ending
+
+(deftest ending-deletes-and-expires-the-cookie
+  (with-world ()
+    (let* ((b (started-browser "k" 1))
+           (old (browser-sid b)))
+      (incf *now* 1)
+      (multiple-value-bind (s response) (visit b #'end-session)
+        (ok (session-ended-p s))
+        (ok (equal (format-session-cookie (make-cookie-policy) (make-env) "" 0)
+                   (session-cookie response))
+            "the expiry cookie exactly")
+        (ok (same-attributes-p '(("max-age" . "0") ("path" . "/")
+                                 ("samesite" . "Lax") ("httponly"))
+                               (cookie-attributes response)))
+        (ok (equal "" (cookie-id response))))
+      (ok (null (peek old)) "the record is deleted")
+      (ok (null (browser-sid b)) "the browser dropped the cookie")
+      (ok (session-new-p (visit (make-browser :cookies (list (cons "sid" old)))
+                                #'identity))
+          "the old id opens nothing"))))
+
+(deftest ending-on-https-keeps-secure
+  (with-world ()
+    (let ((b (make-browser :scheme "https")))
+      (visit b (lambda (s) (setf (session-value s "k") 1)))
+      (let ((response (nth-value 1 (visit b #'end-session))))
+        (ok (nth-value 1 (attribute response "secure")))
+        (ok (equal "0" (attribute response "max-age")))))))
+
+(deftest ending-a-new-session
+  (with-world ()
+    (let ((response (call-app (app #'end-session) (make-env))))
+      (ok (equal "" (cookie-id response)) "the expiry cookie is always sent")
+      (ok (equal '(0 0 0) (calls *cache*)) "nothing to delete"))))
+
+(deftest ending-after-rotation-deletes-the-loaded-id
+  (with-world ()
+    (let* ((b (started-browser "k" 1))
+           (old (browser-sid b))
+           (rotated nil))
+      (incf *now* 1)
+      (let ((response (nth-value 1 (visit b (lambda (s)
+                                              (setf rotated (regenerate-session-id s))
+                                              (end-session s))))))
+        (ok (equal "" (cookie-id response)))
+        (ok (null (peek old)))
+        (ok (null (peek rotated)))))))
+
+(deftest a-write-after-ending-in-the-same-request
+  (with-world ()
+    (let ((b (started-browser "k" 1)))
+      (incf *now* 1)
+      (let ((response (nth-value 1 (visit b (lambda (s)
+                                              (end-session s)
+                                              (handler-bind ((session-write-error #'continue))
+                                                (setf (session-value s "flash") "bye")))))))
+        (ok (equal "" (cookie-id response)) "still ended")
+        (ok (equal '(1 1 1) (calls *cache*))
+            "after the first request's save: one load, one delete, no save")))))
+
+(deftest clearing-a-loaded-session-saves-it-empty
+  (with-world ()
+    (let* ((b (started-browser "a" 1 "b" 2))
+           (id (browser-sid b)))
+      (incf *now* 1)
+      (let ((response (nth-value 1 (visit b #'clear-session))))
+        (ok (equal id (cookie-id response)) "same id, cookie re-sent")
+        (ok (json-equal (table) (stored-data id)))))))
