@@ -4,7 +4,7 @@ Anonymous server-side sessions for Clack apps on [cl-stack](https://github.com/e
 
 The protocol is transport-neutral: two phases over a Clack env and a Clack response. `begin-session` reads the cookie and loads the session, or starts one lazily. `finish-session` commits it (save, rotate or delete) and adds the Set-Cookie. A middleware binds the two phases (slice S0b: a `session-handler` mixin on middleware-protocol). This package defines no middleware of its own and uses no Lack middleware.
 
-**Status:** contract for slice S0 (0.1.0). The design is in the capability brief [cl-stack/docs/capabilities/session.md](https://github.com/egao1980/cl-stack/blob/main/docs/capabilities/session.md). Each file header in `src/` states its rules. The package, the conditions, the classes and their constructors are given; the other functions are stubs, and the Rove suite in `tests/` is the spec. A team-solve run implements them.
+**Status:** slice S0 (0.1.0), implemented. The design is in the capability brief [cl-stack/docs/capabilities/session.md](https://github.com/egao1980/cl-stack/blob/main/docs/capabilities/session.md). Each file header in `src/` states its rules, and the Rove suite in `tests/` (308 tests) is the spec.
 
 | File | What |
 |------|------|

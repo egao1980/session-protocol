@@ -28,9 +28,8 @@
 ;;;;
 ;;;; Given in the S0 contract: the package, the conditions and restart
 ;;;; functions, the classes with their constructors (argument checks
-;;;; included) and readers. Everything else is a stub that calls
-;;;; %S0-PENDING; each file header states the rules, and the Rove suite in
-;;;; tests/ is the spec.
+;;;; included) and readers. Each file header states the rules its
+;;;; functions implement, and the Rove suite in tests/ is the spec.
 ;;;;
 ;;;; Secrets. A session id is a bearer credential. No report, message,
 ;;;; PRINT-OBJECT output or condition slot of this library contains one; it
@@ -119,8 +118,3 @@ request and response phases a middleware calls.")
    #:env-session))
 
 (in-package #:session-protocol)
-
-(defun %s0-pending (name)
-  "Contract stub for slice S0. Every call is replaced by the implementation,
-then this function is deleted."
-  (error "session-protocol S0 pending: ~A" name))

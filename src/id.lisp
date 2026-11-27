@@ -24,10 +24,16 @@
 
 (defun generate-session-id ()
   "A fresh session id: (SECRETS-PROTOCOL:TOKEN-URLSAFE 32). See the file header."
-  (%s0-pending 'generate-session-id))
+  (stack-secrets:token-urlsafe 32))
+
+(defun %id-char-p (char)
+  "True for an ASCII letter or digit, a hyphen or an underscore."
+  (or (char<= #\a char #\z) (char<= #\A char #\Z) (char<= #\0 char #\9)
+      (char= char #\-) (char= char #\_)))
 
 (defun valid-session-id-p (object)
   "True when OBJECT is a string of +SESSION-ID-LENGTH+ characters of
 [A-Za-z0-9_-]. Never signals. See the file header."
-  (declare (ignorable object))
-  (%s0-pending 'valid-session-id-p))
+  (and (stringp object)
+       (= (length object) +session-id-length+)
+       (every #'%id-char-p object)))

@@ -85,11 +85,30 @@ TYPE-ERROR otherwise. See the file header."
 (defun read-session-cookie (policy env)
   "The raw value of the first cookie named (COOKIE-POLICY-NAME POLICY) in ENV's
 Cookie header, or NIL. Never signals on header text. See the file header."
-  (declare (ignorable policy env))
-  (%s0-pending 'read-session-cookie))
+  (let* ((headers (getf env :headers))
+         (text (and (hash-table-p headers) (gethash "cookie" headers))))
+    (when (stringp text)
+      (let ((name (cookie-policy-name policy)))
+        ;; With :LENIENT T and no percent-decoding, quri does not signal on
+        ;; any string. A field without "=" comes back as (name . NIL).
+        (loop for (field . value)
+                in (quri:url-decode-params text :delimiter #\; :lenient t
+                                                :percent-decode nil)
+              when (and value
+                        (string= name (string-trim '(#\Space #\Tab) field)))
+                return value)))))
 
 (defun format-session-cookie (policy env value max-age)
   "The Set-Cookie header value for VALUE with MAX-AGE seconds, written by
 CL-COOKIE:WRITE-SET-COOKIE-HEADER. See the file header."
-  (declare (ignorable policy env value max-age))
-  (%s0-pending 'format-session-cookie))
+  (check-type value string)
+  (check-type max-age (integer 0))
+  (let* ((scheme (getf env :url-scheme))
+         ;; A real boolean: cl-cookie declares SECURE-P a BOOLEAN slot.
+         (secure (or (eq (cookie-policy-secure policy) t)
+                     (and (stringp scheme) (string-equal scheme "https")))))
+    (cl-cookie:write-set-cookie-header
+     (cl-cookie:make-cookie :name (cookie-policy-name policy) :value value
+                            :path "/" :max-age max-age
+                            :same-site (cookie-policy-same-site policy)
+                            :secure-p (and secure t) :httponly-p t))))

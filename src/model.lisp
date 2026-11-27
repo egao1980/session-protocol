@@ -115,36 +115,95 @@ this request. See the file header."
             (session-ended-p session) (session-committed-p session)
             (hash-table-count (session-data session)))))
 
+;;; Step 1 of every writer: an ended or committed session refuses changes.
+
+(defun %closed-p (session)
+  "True when SESSION is ended or committed: it refuses changes."
+  (or (session-ended-p session) (session-committed-p session)))
+
+(defun %refuse-write (session)
+  "Signal SESSION-WRITE-ERROR for SESSION with CERROR. Returns NIL when the
+CONTINUE restart is taken: the change is ignored."
+  (cerror "Ignore the change." 'session-write-error :session session)
+  nil)
+
+(defun %read-replacement ()
+  "Interactive arguments of a USE-VALUE restart: one value typed by the person
+at the debugger, read from *QUERY-IO* (not evaluated, *READ-EVAL* NIL). Never
+used on stored data."
+  (format *query-io* "~&Value to use instead (JSON data, read, not evaluated): ")
+  (force-output *query-io*)
+  (list (let ((*read-eval* nil)) (read *query-io*))))
+
 (defun session-value (session key &optional default)
   "(values value present-p) for KEY (a string) in SESSION's data, or
 (values DEFAULT NIL). See the file header."
-  (declare (ignorable session key default))
-  (%s0-pending 'session-value))
+  (check-type key string)
+  (gethash key (session-data session) default))
 
 (defun (setf session-value) (value session key &optional default)
   "Store VALUE (JSON data) under KEY. Signals SESSION-WRITE-ERROR (CONTINUE),
 TYPE-ERROR, SESSION-VALUE-ERROR (USE-VALUE, SKIP-VALUE). See the file header."
-  (declare (ignorable value session key default))
-  (%s0-pending '(setf session-value)))
+  (declare (ignore default))
+  (when (%closed-p session)
+    (return-from session-value (%refuse-write session)))
+  (check-type key string)
+  (loop
+    (multiple-value-bind (tree offending-p offender reason)
+        (%json-tree value :build nil)
+      (declare (ignore tree))
+      (unless offending-p
+        (setf (gethash key (session-data session)) value
+              (slot-value session 'changed) t)
+        (return value))
+      (restart-case (error 'session-value-error :key key :value offender
+                                                :message reason)
+        (use-value (replacement)
+          :report "Store another value under this key (it is checked again)."
+          :interactive %read-replacement
+          (setf value replacement))
+        (skip-value ()
+          :report "Store nothing under this key."
+          (return nil))))))
 
 (defun remove-session-value (session key)
   "Remove KEY; T when it was present. See the file header."
-  (declare (ignorable session key))
-  (%s0-pending 'remove-session-value))
+  (when (%closed-p session)
+    (return-from remove-session-value (%refuse-write session)))
+  (check-type key string)
+  (let ((data (session-data session)))
+    (when (nth-value 1 (gethash key data))
+      (remhash key data)
+      (setf (slot-value session 'changed) t)
+      t)))
 
 (defun clear-session (session)
   "Remove every key. Returns SESSION. See the file header."
-  (declare (ignorable session))
-  (%s0-pending 'clear-session))
+  (when (%closed-p session)
+    (return-from clear-session (%refuse-write session)))
+  (let ((data (session-data session)))
+    (when (plusp (hash-table-count data))
+      (clrhash data)
+      (setf (slot-value session 'changed) t)))
+  session)
 
 (defun regenerate-session-id (session)
   "Give SESSION a fresh id, keeping its data; the commit deletes the old one.
 Returns the new id. See the file header."
-  (declare (ignorable session))
-  (%s0-pending 'regenerate-session-id))
+  (when (%closed-p session)
+    (return-from regenerate-session-id (%refuse-write session)))
+  ;; The id is made first: a SECRETS-ERROR leaves the session as it was.
+  (let ((id (generate-session-id)))
+    (setf (slot-value session 'id) id
+          (slot-value session 'rotated) t)
+    id))
 
 (defun end-session (session)
   "End SESSION: data removed; the commit deletes it and expires the cookie.
 Returns SESSION. See the file header."
-  (declare (ignorable session))
-  (%s0-pending 'end-session))
+  (when (session-committed-p session)
+    (return-from end-session (%refuse-write session)))
+  (unless (session-ended-p session)
+    (clrhash (session-data session))
+    (setf (slot-value session 'ended) t))
+  session)

@@ -77,14 +77,52 @@ PREFIX followed by the session id."
   (check-type prefix string)
   (make-instance 'cache-session-store :cache cache :prefix prefix))
 
+(defmacro %with-cache-errors ((store operation) &body body)
+  "Run BODY, a cache call: a STACK-CACHE:CACHE-ERROR it signals is signalled
+again as SESSION-STORE-ERROR (OPERATION, STORE, CAUSE the cache error) from a
+HANDLER-BIND handler, so the cache's own restarts stay live. ERROR, not
+CERROR: the only CONTINUE a caller sees is the manager's. Other conditions
+pass through unchanged."
+  `(handler-bind ((stack-cache:cache-error
+                    (lambda (c)
+                      (error 'session-store-error
+                             :store ,store :operation ,operation :cause c
+                             :message "the cache failed"))))
+     ,@body))
+
+(defun %cache-key (store id)
+  "The cache key of ID in STORE: the prefix followed by the id."
+  (concatenate 'string (cache-session-store-prefix store) id))
+
 (defmethod session-store-load ((store cache-session-store) id)
-  (declare (ignorable id))
-  (%s0-pending 'session-store-load))
+  (let ((value (%with-cache-errors (store :load)
+                 (stack-cache:cache-get (cache-session-store-cache store)
+                                        (%cache-key store id)))))
+    (typecase value
+      (null nil)
+      (string
+       (handler-case (decode-session-record value)
+         (session-store-error (e)
+           (error 'session-store-error
+                  :store store :operation :load
+                  :cause (session-store-error-cause e)
+                  :message (session-error-message e)))))
+      (t (error 'session-store-error
+                :store store :operation :load :cause nil
+                :message "the cached value is not record text")))))
 
 (defmethod session-store-save ((store cache-session-store) session ttl)
-  (declare (ignorable session ttl))
-  (%s0-pending 'session-store-save))
+  ;; The encoding first, outside the cache call: its value errors are not
+  ;; store failures, and nothing reaches the cache before they are settled.
+  (let ((text (encode-session-record session)))
+    (%with-cache-errors (store :save)
+      (stack-cache:cache-put (cache-session-store-cache store)
+                             (%cache-key store (session-id session))
+                             text :ttl ttl)))
+  session)
 
 (defmethod session-store-delete ((store cache-session-store) id)
-  (declare (ignorable id))
-  (%s0-pending 'session-store-delete))
+  (%with-cache-errors (store :delete)
+    (and (stack-cache:cache-delete (cache-session-store-cache store)
+                                   (%cache-key store id))
+         t)))

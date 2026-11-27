@@ -172,21 +172,193 @@ manager.lisp."))
                      :idle-ttl idle-ttl :absolute-ttl absolute-ttl
                      :refresh-interval refresh-interval :clock clock))))
 
+;;; Store calls: RETRY and CONTINUE around each one, in both phases.
+
+(defmacro %with-store-restarts ((&optional on-continue) &body body)
+  "Run BODY, one store call, inside the restarts RETRY (run it again) and
+CONTINUE (go on without it: the form returns ON-CONTINUE). BODY is not a
+signalling form, so the restarts are associated with no condition: (RETRY c)
+and (CONTINUE c) find them for the store's SESSION-STORE-ERROR."
+  (let ((done (gensym "STORE-CALL"))
+        (again (gensym "AGAIN")))
+    `(block ,done
+       (tagbody
+          ,again
+          (restart-case (return-from ,done (progn ,@body))
+            (retry ()
+              :report "Run the session store operation again."
+              (go ,again))
+            (continue ()
+              :report "Go on without this session store operation."
+              (return-from ,done ,on-continue)))))))
+
+(defun %now (manager)
+  "MANAGER's clock now, in whole Unix seconds."
+  (values (floor (funcall (session-manager-clock manager)))))
+
+(defun %same-id-p (requested id)
+  "True when ID, a loaded record's id, is REQUESTED (a valid id), compared
+with SECRETS-PROTOCOL:CONSTANT-TIME-EQUAL on the character codes. The decoder
+does not validate ID, so an id that is not one (a non-ASCII one cannot be
+coded as octets) is a mismatch."
+  (and (valid-session-id-p id)
+       (flet ((codes (string)
+                (map '(simple-array (unsigned-byte 8) (*)) #'char-code string)))
+         (stack-secrets:constant-time-equal (codes requested) (codes id)))))
+
+;;; The decisions. Each is one pure function of id-free facts, so it can move
+;;; to logic-protocol as it stands (rules-and-logic: isolated, migratable).
+
+(defun %load-verdict (&key same-id idle-over absolute-over)
+  "BEGIN-SESSION step 3, for a loaded session: :KEEP it, :DROP it (the record
+is left alone) or :EXPIRE it (dropped, and the record deleted). A mismatched
+id is dropped before any expiry is looked at."
+  (cond ((not same-id) :drop)
+        ((or idle-over absolute-over) :expire)
+        (t :keep)))
+
+(defun %commit-effects (&key loaded ended expired rotated changed moved stale empty)
+  "The commit's steps 2 to 5 as a list of effects, a subset of
+  :END            end the session here (the absolute lifetime ran out)
+  :DELETE-LOADED  delete the id the session was loaded under
+  :SAVE           LAST-SEEN = now, then save under the current id
+  :COOKIE         the session cookie, with the save's ttl
+  :EXPIRE-COOKIE  the expiry cookie
+from booleans: LOADED (not new), ENDED, EXPIRED (ttl <= 0), ROTATED, CHANGED
+(an accessor ran), MOVED (the data text differs from the baseline), STALE
+(the refresh rule) and EMPTY (no data). NIL: no store call, no cookie."
+  (cond ((or ended expired)
+         (append (and expired (not ended) (list :end))
+                 (and loaded (list :delete-loaded))
+                 (list :expire-cookie)))
+        ((if loaded (or rotated changed moved stale) (not empty))
+         (append (and loaded rotated (list :delete-loaded))
+                 (list :save :cookie)))
+        (t '())))
+
+;;; The request phase
+
 (defun begin-session (manager env)
   "The request phase: read the session cookie of ENV, load the session or
 start a new one (stored only if the commit writes it). Returns the session
 and ENV with the session under :SESSION. See the file header."
-  (declare (ignorable manager env))
-  (%s0-pending 'begin-session))
+  (let* ((now (%now manager))
+         (store (session-manager-store manager))
+         (raw (read-session-cookie (session-manager-cookie-policy manager) env))
+         ;; A value that is not an id never reaches the store.
+         (loaded (and (valid-session-id-p raw)
+                      (%with-store-restarts ()
+                        (session-store-load store raw)))))
+    (when loaded
+      (let ((absolute (session-manager-absolute-ttl manager)))
+        (ecase (%load-verdict
+                :same-id (%same-id-p raw (session-id loaded))
+                :idle-over (>= now (+ (session-last-seen loaded)
+                                      (session-manager-idle-ttl manager)))
+                :absolute-over (and absolute
+                                    (>= now (+ (session-created-at loaded)
+                                               absolute))))
+          (:keep)
+          (:drop (setf loaded nil))
+          (:expire (%with-store-restarts ()
+                     (session-store-delete store raw))
+                   (setf loaded nil)))))
+    (let ((session (or loaded
+                       (make-session :id (generate-session-id)
+                                     :created-at now :last-seen now :new-p t))))
+      (setf (slot-value session 'baseline)
+            (if loaded (session-data-json session) "{}"))
+      (values session (list* :session session env)))))
 
 (defun env-session (env)
   "The session BEGIN-SESSION put in ENV (under :SESSION), or NIL."
-  (declare (ignorable env))
-  (%s0-pending 'env-session))
+  (getf env :session))
+
+;;; The response phase
+
+(defun %save-session (store session ttl now)
+  "Commit step 5's save: LAST-SEEN = NOW, then SESSION-STORE-SAVE inside RETRY
+and CONTINUE. When a condition escapes, LAST-SEEN gets its old value back, so
+a second FINISH-SESSION decides as the first did."
+  (let ((seen (session-last-seen session))
+        (done nil))
+    (setf (slot-value session 'last-seen) now)
+    (unwind-protect
+         (progn (%with-store-restarts ()
+                  (session-store-save store session ttl))
+                (setf done t))
+      (unless done
+        (setf (slot-value session 'last-seen) seen)))))
+
+(defun %commit (manager session env)
+  "The commit (file header, steps 1 to 6). Returns the Set-Cookie value, or
+NIL. Every fact is taken before any effect runs."
+  (let* ((now (%now manager))
+         (store (session-manager-store manager))
+         (policy (session-manager-cookie-policy manager))
+         (ended (session-ended-p session))
+         ;; Step 1, outside every store restart: a bad value is fixed or
+         ;; dropped before anything is stored.
+         (text (unless ended (session-data-json session)))
+         (idle (session-manager-idle-ttl manager))
+         (absolute (session-manager-absolute-ttl manager))
+         (ttl (if absolute
+                  (min idle (- (+ (session-created-at session) absolute) now))
+                  idle))
+         (old (slot-value session 'loaded-id))
+         (effects (%commit-effects
+                   :loaded (and old t)
+                   :ended ended
+                   :expired (<= ttl 0)
+                   :rotated (session-rotated-p session)
+                   :changed (session-changed-p session)
+                   ;; EQUAL: a session not made by BEGIN-SESSION has no
+                   ;; baseline (NIL).
+                   :moved (not (equal text (slot-value session 'baseline)))
+                   :stale (>= (- now (session-last-seen session))
+                              (session-manager-refresh-interval manager))
+                   :empty (zerop (hash-table-count (session-data session))))))
+    (flet ((effectp (effect) (member effect effects)))
+      (when (effectp :end)
+        (end-session session))
+      (when (effectp :delete-loaded)
+        (%with-store-restarts ()
+          (session-store-delete store old)))
+      (when (effectp :save)
+        (%save-session store session ttl now))
+      (prog1 (cond ((effectp :expire-cookie)
+                    (format-session-cookie policy env "" 0))
+                   ((effectp :cookie)
+                    (format-session-cookie policy env (session-id session) ttl)))
+        (setf (slot-value session 'committed) t)))))
+
+(defun %complete-response (response cookie)
+  "RESPONSE with COOKIE as its last :SET-COOKIE header, as a fresh list (the
+app's list is not modified), or RESPONSE itself when COOKIE is NIL."
+  (if cookie
+      (list* (first response)
+             (append (second response) (list :set-cookie cookie))
+             (copy-list (cddr response)))
+      response))
+
+(defun %commit-response (manager session env response)
+  "Commit SESSION, unless it is committed, and complete the response list."
+  (if (session-committed-p session)
+      response
+      (%complete-response response (%commit manager session env))))
 
 (defun finish-session (manager session env response)
   "The response phase: commit SESSION (save, rotate or delete) and add its
 Set-Cookie to RESPONSE, a Clack response list or streaming function. See the
 file header."
-  (declare (ignorable manager session env response))
-  (%s0-pending 'finish-session))
+  (check-type response (or cons function))
+  (cond ((session-committed-p session) response)
+        ((consp response) (%commit-response manager session env response))
+        (t
+         ;; Streaming: commit when the app starts its response, before any
+         ;; of the body; return what the server's responder returns.
+         (lambda (responder)
+           (funcall response
+                    (lambda (head)
+                      (funcall responder
+                               (%commit-response manager session env head))))))))
