@@ -1,5 +1,5 @@
 (defsystem "session-protocol"
-  :version "0.1.0"
+  :version "0.2.0"
   :description "Anonymous server-side sessions for Clack apps: a session model with JSON values, a store protocol over cache-protocol, ids from secrets-protocol, a cookie policy, and begin / finish phases for middleware"
   :author "egao1980"
   :license "MIT"
@@ -20,8 +20,22 @@
                (:file "manager"))
   :in-order-to ((test-op (test-op "session-protocol/tests"))))
 
-(defsystem "session-protocol/tests"
+(defsystem "session-protocol/middleware"
+  :version "0.2.0"
+  :description "session-protocol as a middleware-protocol mixin: SESSION-HANDLER begins a session in PREPARE-REQUEST and commits it in FINISH-RESPONSE for Clack requests, streamed responses included"
+  :author "egao1980"
+  :license "MIT"
   :depends-on ("session-protocol"
+               (:version "middleware-protocol" "0.1.0")
+               (:version "middleware-protocol/clack" "0.1.0"))
+  :pathname "src"
+  :components ((:file "middleware"))
+  :in-order-to ((test-op (test-op "session-protocol/tests"))))
+
+(defsystem "session-protocol/tests"
+  :version "0.2.0"
+  :depends-on ("session-protocol"
+               "session-protocol/middleware"
                (:version "rove" "0.11.1")
                (:version "json-backend-jzon" "0.2.4")
                (:version "crypto-backend-ironclad" "0.2.2"))
@@ -39,7 +53,12 @@
                (:file "expiry-test")
                (:file "lifecycle-test")
                (:file "streaming-test")
-               (:file "failure-test"))
+               (:file "failure-test")
+               ;; S0b: SESSION-HANDLER (package SESSION-PROTOCOL/MIDDLEWARE/TESTS)
+               (:file "middleware-package")
+               (:file "middleware-flow-test")
+               (:file "middleware-streaming-test")
+               (:file "middleware-compose-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
