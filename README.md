@@ -4,7 +4,7 @@ Anonymous server-side sessions for Clack apps on [cl-stack](https://github.com/e
 
 The protocol is transport-neutral: two phases over a Clack env and a Clack response. `begin-session` reads the cookie and loads the session, or starts one lazily. `finish-session` commits it (save, rotate or delete) and adds the Set-Cookie. The core system defines no middleware and uses no Lack middleware. The secondary system `session-protocol/middleware` binds the two phases to [middleware-protocol](https://github.com/egao1980/middleware-protocol): `session-handler` is a mixin whose `prepare-request` begins the session and whose `finish-response` commits it, also for streamed responses.
 
-**Status:** slice S0 (0.1.0), implemented. Slice S0b (0.2.0, `session-protocol/middleware`): **contract**, the hook methods and `request-session` are stubs. The design is in the capability brief [cl-stack/docs/capabilities/session.md](https://github.com/egao1980/cl-stack/blob/main/docs/capabilities/session.md). Each file header in `src/` states its rules, and the Rove suite in `tests/` is the spec (S0: 308 tests; S0b: 49 tests in the `middleware-*.lisp` files).
+**Status:** slice S0 (0.1.0), implemented. Slice S0b (0.2.0, `session-protocol/middleware`), implemented. The design is in the capability brief [cl-stack/docs/capabilities/session.md](https://github.com/egao1980/cl-stack/blob/main/docs/capabilities/session.md). Each file header in `src/` states its rules, and the Rove suite in `tests/` is the spec (S0: 308 tests; S0b: 49 tests in the `middleware-*.lisp` files).
 
 | File | What |
 |------|------|

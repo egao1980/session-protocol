@@ -107,9 +107,9 @@
 ;;;; the env key, which a streamed body still reaches (middleware.md, D6).
 ;;;;
 ;;;; Given in the S0b contract: the package, SESSION-HANDLER with its slot,
-;;;; initarg, default, accessor and type check. Stubbed: the two hook methods
-;;;; and REQUEST-SESSION; the Rove suite in tests/ (the middleware-*.lisp
-;;;; files) is the spec.
+;;;; initarg, default, accessor and type check. The two hook methods and
+;;;; REQUEST-SESSION implement the rules above; the Rove suite in tests/ (the
+;;;; middleware-*.lisp files) is the spec.
 
 (defpackage #:session-protocol/middleware
   (:use #:cl #:session-protocol #:middleware-protocol #:middleware-protocol/clack)
@@ -127,9 +127,6 @@ app calls its responder). REQUEST-SESSION reads it back from a request.")
 
 (in-package #:session-protocol/middleware)
 
-(defun %s0b-pending (name)
-  (error "session-protocol S0b pending: ~A" name))
-
 (defclass session-handler (handler)
   ((%session-manager :initarg :session-manager
                      :initform (make-session-manager)
@@ -143,14 +140,30 @@ FINISH-RESPONSE, for Clack requests (file header)."))
 (defun request-session (request)
   "The session SESSION-HANDLER put on REQUEST (its :SESSION property), or NIL;
 NIL for an object that is not a STACK-MIDDLEWARE:REQUEST (file header)."
-  (declare (ignorable request))
-  (%s0b-pending 'request-session))
+  (if (typep request 'request)
+      ;; VALUES: the primary value only, not REQUEST-PROPERTY's PRESENT-P.
+      (values (request-property request :session))
+      nil))
 
 (defmethod prepare-request ((handler session-handler) (request clack-request))
   "Begin the session: on the request as :SESSION and in its env (file header)."
-  (%s0b-pending '(prepare-request session-handler)))
+  (multiple-value-bind (session env*)
+      (begin-session (session-handler-manager handler) (clack-request-env request))
+    ;; Steps 2 and 3, only once BEGIN-SESSION has returned (its RETRY and
+    ;; CONTINUE are inside it), on the request object every outer layer holds.
+    ;; ENV* is BEGIN-SESSION's (LIST* :SESSION session <the server's env>),
+    ;; installed as is.
+    (setf (request-property request :session) session
+          (clack-request-env request) env*))
+  ;; Step 4: the PREPARE-REQUEST methods of inner mixins see the session.
+  (call-next-method))
 
 (defmethod finish-response ((handler session-handler) (request clack-request) response)
   "Commit the request's session into the response, an immediate list (file header)."
-  (declare (ignorable response))
-  (%s0b-pending '(finish-response session-handler)))
+  (declare (ignorable response))        ; passed on by CALL-NEXT-METHOD
+  (let* ((response* (call-next-method)) ; inner mixins finish first
+         (session (request-session request)))
+    (if (typep session 'session)
+        (finish-session (session-handler-manager handler) session
+                        (clack-request-env request) response*)
+        response*)))
